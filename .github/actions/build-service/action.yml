@@ -1,0 +1,23 @@
+name: 'Build Service'
+description: 'Build a Pivori service Docker image'
+inputs:
+  service-name:
+    description: 'Name of the service to build'
+    required: true
+  registry:
+    description: 'Docker registry'
+    required: false
+    default: 'docker.io'
+outputs:
+  image-tag:
+    description: 'Built image tag'
+    value: ${{ steps.build.outputs.image-tag }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Build service
+      id: build
+      shell: bash
+      run: |
+        docker build -t ${{ inputs.registry }}/pivori/${{ inputs.service-name }}:latest services/${{ inputs.service-name }}/
+        echo "image-tag=${{ inputs.registry }}/pivori/${{ inputs.service-name }}:latest" >> $GITHUB_OUTPUT

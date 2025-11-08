@@ -1,0 +1,19 @@
+name: 'Run Tests'
+description: 'Run tests for a service'
+inputs:
+  service-name:
+    description: 'Name of the service to test'
+    required: true
+  test-type:
+    description: 'Type of tests (unit, integration, all)'
+    required: false
+    default: 'all'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run tests
+      shell: bash
+      run: |
+        cd services/${{ inputs.service-name }}
+        pip install -r requirements.txt
+        pytest tests/${{ inputs.test-type }}/ -v --cov=app
