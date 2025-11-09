@@ -1,0 +1,551 @@
+---
+# PrometheusRule pour les alertes de production
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pivori-production-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+spec:
+  groups:
+  # Groupe 1: Alertes de Performance (Latency)
+  - name: performance.rules
+    interval: 30s
+    rules:
+    - alert: HighP95Latency
+      expr: |
+        histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+        component: performance
+      annotations:
+        summary: "P95 Latency élevée détectée"
+        description: "P95 latency est {{ $value }}ms (seuil: 500ms)"
+        dashboard: "http://grafana:3000/d/prod-perf-reliability"
+
+    - alert: CriticalP99Latency
+      expr: |
+        histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1.0
+      for: 3m
+      labels:
+        severity: critical
+        component: performance
+      annotations:
+        summary: "P99 Latency CRITIQUE"
+        description: "P99 latency est {{ $value }}ms (seuil: 1000ms)"
+        dashboard: "http://grafana:3000/d/prod-perf-reliability"
+
+    - alert: ServiceLatencyDegradation
+      expr: |
+        (histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=~\".*\"}[5m])) by (service, le)) / 
+         histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=~\".*\"}[1h] offset 1h)) by (service, le))) > 1.5
+      for: 10m
+      labels:
+        severity: warning
+        component: performance
+      annotations:
+        summary: "Dégradation de latence pour {{ $labels.service }}"
+        description: "Latency a augmenté de {{ $value | humanizePercentage }} en 1 heure"
+
+  # Groupe 2: Alertes de Fiabilité (Error Rate)
+  - name: reliability.rules
+    interval: 30s
+    rules:
+    - alert: HighErrorRate
+      expr: |
+        (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.01
+      for: 5m
+      labels:
+        severity: warning
+        component: reliability
+      annotations:
+        summary: "Taux d'erreur élevé"
+        description: "Error rate est {{ $value | humanizePercentage }} (seuil: 1%)"
+        dashboard: "http://grafana:3000/d/prod-perf-reliability"
+
+    - alert: CriticalErrorRate
+      expr: |
+        (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.05
+      for: 2m
+      labels:
+        severity: critical
+        component: reliability
+      annotations:
+        summary: "Taux d'erreur CRITIQUE"
+        description: "Error rate est {{ $value | humanizePercentage }} (seuil: 5%)"
+        dashboard: "http://grafana:3000/d/prod-perf-reliability"
+
+    - alert: ServiceDown
+      expr: |
+        up{job=~".*"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: reliability
+      annotations:
+        summary: "Service {{ $labels.job }} est DOWN"
+        description: "{{ $labels.instance }} n'a pas répondu aux health checks"
+
+    - alert: HighClientErrorRate
+      expr: |
+        (sum(rate(http_requests_total{status=~"4.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.1
+      for: 10m
+      labels:
+        severity: info
+        component: reliability
+      annotations:
+        summary: "Taux d'erreur client élevé"
+        description: "Client error rate est {{ $value | humanizePercentage }} (seuil: 10%)"
+
+  # Groupe 3: Alertes de Ressources
+  - name: resources.rules
+    interval: 30s
+    rules:
+    - alert: HighMemoryUsage
+      expr: |
+        sum(container_memory_usage_bytes{pod=~".*"}) by (pod) / 1024 / 1024 / 1024 > 1.8
+      for: 5m
+      labels:
+        severity: warning
+        component: resources
+      annotations:
+        summary: "Utilisation mémoire élevée pour {{ $labels.pod }}"
+        description: "Memory usage est {{ $value | humanize }}GB (seuil: 1.8GB)"
+
+    - alert: CriticalMemoryUsage
+      expr: |
+        sum(container_memory_usage_bytes{pod=~".*"}) by (pod) / 1024 / 1024 / 1024 > 1.95
+      for: 2m
+      labels:
+        severity: critical
+        component: resources
+      annotations:
+        summary: "Utilisation mémoire CRITIQUE pour {{ $labels.pod }}"
+        description: "Memory usage est {{ $value | humanize }}GB (seuil: 1.95GB)"
+
+    - alert: HighCPUUsage
+      expr: |
+        sum(rate(container_cpu_usage_seconds_total{pod=~".*"}[5m])) by (pod) * 100 > 75
+      for: 5m
+      labels:
+        severity: warning
+        component: resources
+      annotations:
+        summary: "Utilisation CPU élevée pour {{ $labels.pod }}"
+        description: "CPU usage est {{ $value | humanize }}% (seuil: 75%)"
+
+    - alert: CriticalCPUUsage
+      expr: |
+        sum(rate(container_cpu_usage_seconds_total{pod=~".*"}[5m])) by (pod) * 100 > 90
+      for: 3m
+      labels:
+        severity: critical
+        component: resources
+      annotations:
+        summary: "Utilisation CPU CRITIQUE pour {{ $labels.pod }}"
+        description: "CPU usage est {{ $value | humanize }}% (seuil: 90%)"
+
+    - alert: DiskSpaceRunningOut
+      expr: |
+        (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes) < 0.1
+      for: 5m
+      labels:
+        severity: warning
+        component: resources
+      annotations:
+        summary: "Espace disque faible sur {{ $labels.device }}"
+        description: "Espace disponible: {{ $value | humanizePercentage }} (seuil: 10%)"
+
+  # Groupe 4: Alertes de Disponibilité
+  - name: availability.rules
+    interval: 30s
+    rules:
+    - alert: PodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+      for: 5m
+      labels:
+        severity: critical
+        component: availability
+      annotations:
+        summary: "Pod {{ $labels.pod }} crash looping"
+        description: "Pod a redémarré {{ $value }} fois en 15 minutes"
+
+    - alert: PodNotReady
+      expr: |
+        sum by (pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed"}) > 0
+      for: 5m
+      labels:
+        severity: warning
+        component: availability
+      annotations:
+        summary: "Pod {{ $labels.pod }} n'est pas ready"
+        description: "Pod est en phase {{ $labels.phase }}"
+
+    - alert: NodeNotReady
+      expr: |
+        kube_node_status_condition{condition="Ready", status="true"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: availability
+      annotations:
+        summary: "Node {{ $labels.node }} n'est pas ready"
+        description: "Node est indisponible"
+
+    - alert: KubernetesStatefulsetReplicasMismatch
+      expr: |
+        kube_statefulset_status_replicas_ready != kube_statefulset_status_replicas
+      for: 5m
+      labels:
+        severity: warning
+        component: availability
+      annotations:
+        summary: "StatefulSet {{ $labels.statefulset }} replicas mismatch"
+        description: "Ready replicas: {{ $value }}, Expected: {{ $labels.replicas }}"
+
+  # Groupe 5: Alertes de Base de Données
+  - name: database.rules
+    interval: 30s
+    rules:
+    - alert: PostgreSQLDown
+      expr: |
+        pg_up == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL {{ $labels.instance }} est DOWN"
+        description: "PostgreSQL n'est pas accessible"
+
+    - alert: PostgreSQLSlowQueries
+      expr: |
+        rate(pg_stat_statements_mean_time[5m]) > 1000
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "Requêtes PostgreSQL lentes"
+        description: "Temps moyen: {{ $value }}ms"
+
+    - alert: PostgreSQLConnectionPoolExhausted
+      expr: |
+        sum(pg_stat_activity_count) > 90
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "Pool de connexions PostgreSQL presque saturé"
+        description: "Connexions actives: {{ $value }}/100"
+
+    - alert: RedisDown
+      expr: |
+        redis_up == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "Redis {{ $labels.instance }} est DOWN"
+        description: "Redis n'est pas accessible"
+
+    - alert: RedisHighMemoryUsage
+      expr: |
+        redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "Utilisation mémoire Redis élevée"
+        description: "Memory usage: {{ $value | humanizePercentage }}"
+
+  # Groupe 6: Alertes de Réseau
+  - name: network.rules
+    interval: 30s
+    rules:
+    - alert: HighNetworkLatency
+      expr: |
+        histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{le="+Inf"}[5m])) > 1
+      for: 5m
+      labels:
+        severity: warning
+        component: network
+      annotations:
+        summary: "Latence réseau élevée"
+        description: "Latency P95: {{ $value }}s"
+
+    - alert: HighPacketLoss
+      expr: |
+        rate(node_network_transmit_errs_total[5m]) > 100
+      for: 5m
+      labels:
+        severity: warning
+        component: network
+      annotations:
+        summary: "Perte de paquets élevée sur {{ $labels.device }}"
+        description: "Erreurs: {{ $value }}/s"
+
+  # Groupe 7: Alertes de Certificats
+  - name: certificates.rules
+    interval: 30s
+    rules:
+    - alert: CertificateExpiringSoon
+      expr: |
+        certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+      for: 1h
+      labels:
+        severity: warning
+        component: security
+      annotations:
+        summary: "Certificat {{ $labels.name }} expire bientôt"
+        description: "Expire dans {{ $value | humanizeDuration }}"
+
+    - alert: CertificateExpired
+      expr: |
+        certmanager_certificate_expiration_timestamp_seconds - time() < 0
+      for: 1m
+      labels:
+        severity: critical
+        component: security
+      annotations:
+        summary: "Certificat {{ $labels.name }} a expiré"
+        description: "Action immédiate requise"
+
+  # Groupe 8: Alertes de Monitoring
+  - name: monitoring.rules
+    interval: 30s
+    rules:
+    - alert: PrometheusDown
+      expr: |
+        up{job="prometheus"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: monitoring
+      annotations:
+        summary: "Prometheus est DOWN"
+        description: "Prometheus n'est pas accessible"
+
+    - alert: PrometheusHighMemoryUsage
+      expr: |
+        container_memory_usage_bytes{pod="prometheus-0"} / 1024 / 1024 / 1024 > 2
+      for: 5m
+      labels:
+        severity: warning
+        component: monitoring
+      annotations:
+        summary: "Utilisation mémoire Prometheus élevée"
+        description: "Memory: {{ $value | humanize }}GB"
+
+    - alert: AlertmanagerDown
+      expr: |
+        up{job="alertmanager"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: monitoring
+      annotations:
+        summary: "Alertmanager est DOWN"
+        description: "Alertmanager n'est pas accessible"
+
+---
+# AlertmanagerConfig pour les notifications
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      slack_api_url: '${SLACK_WEBHOOK_URL}'
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+    route:
+      receiver: 'default'
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      routes:
+      # Alertes critiques -> PagerDuty + Slack
+      - match:
+          severity: critical
+        receiver: 'critical'
+        group_wait: 0s
+        repeat_interval: 4h
+      # Alertes de warning -> Slack
+      - match:
+          severity: warning
+        receiver: 'warning'
+        repeat_interval: 1h
+      # Alertes info -> Slack
+      - match:
+          severity: info
+        receiver: 'info'
+        repeat_interval: 24h
+
+    receivers:
+    - name: 'default'
+      slack_configs:
+      - channel: '#alerts'
+        title: 'Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+    - name: 'critical'
+      slack_configs:
+      - channel: '#critical-alerts'
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+      pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: '{{ .GroupLabels.alertname }}: {{ (index .Alerts 0).Annotations.summary }}'
+        details:
+          firing: '{{ range .Alerts.Firing }}{{ .Labels.instance }} {{ end }}'
+
+    - name: 'warning'
+      slack_configs:
+      - channel: '#warnings'
+        title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+    - name: 'info'
+      slack_configs:
+      - channel: '#info'
+        title: 'ℹ️ INFO: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+    inhibit_rules:
+    - source_match:
+        severity: 'critical'
+      target_match:
+        severity: 'warning'
+      equal: ['alertname', 'dev', 'instance']
+    - source_match:
+        severity: 'warning'
+      target_match:
+        severity: 'info'
+      equal: ['alertname', 'dev', 'instance']
+
+---
+# Alertmanager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      serviceAccountName: alertmanager
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.25.0
+        args:
+          - '--config.file=/etc/alertmanager/alertmanager.yml'
+          - '--storage.path=/alertmanager'
+          - '--web.external-url=http://alertmanager:9093'
+        ports:
+        - containerPort: 9093
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/alertmanager
+        - name: storage
+          mountPath: /alertmanager
+        env:
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: alertmanager-secrets
+              key: slack-webhook-url
+        - name: PAGERDUTY_SERVICE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: alertmanager-secrets
+              key: pagerduty-service-key
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: alertmanager-config
+      - name: storage
+        emptyDir: {}
+
+---
+# Service pour Alertmanager
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9093
+    targetPort: 9093
+    protocol: TCP
+    name: http
+  selector:
+    app: alertmanager
+
+---
+# ServiceAccount pour Alertmanager
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager
+  namespace: monitoring
+
+---
+# Secret pour les credentials Alertmanager
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-secrets
+  namespace: monitoring
+type: Opaque
+stringData:
+  slack-webhook-url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+  pagerduty-service-key: "your-pagerduty-service-key"
+
